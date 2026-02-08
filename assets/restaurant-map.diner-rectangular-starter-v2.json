@@ -1,0 +1,12 @@
+{
+  "name": "Rectangular Classic Diner Starter",
+  "version": "v2",
+  "description": "Simple rectangular diner shell with clear entrance, open interior, partial roof beams.",
+  "notes": [
+    "Designed as starter kit",
+    "Clear front door opening",
+    "Open interior for player customization",
+    "No clutter or forced layout"
+  ],
+  "placeholder": true
+}

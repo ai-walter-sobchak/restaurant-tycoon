@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": 1770580185450,
+  "ownerId": "player-1",
+  "placedItems": [],
+  "restaurantSettings": {
+    "isOpen": false
+  },
+  "rating": 5,
+  "lastActiveAt": 1770580182443
+}

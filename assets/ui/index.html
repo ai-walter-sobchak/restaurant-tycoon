@@ -1,0 +1,697 @@
+<!--
+  Phase 1.5: HUD scaffold (read-only, no gameplay). Modular layout; buttons log only.
+-->
+<div class="hud" id="hud-root">
+  <!-- Top center: primary mode buttons -->
+  <div class="hud-zone hud-top-center">
+    <button type="button" class="hud-mode-btn" data-zone="topCenter" data-action="build">Build</button>
+    <button type="button" class="hud-mode-btn" data-zone="topCenter" data-action="shop">Shop</button>
+    <button type="button" class="hud-mode-btn hud-restaurant" data-zone="topCenter" data-action="restaurant">
+      <span class="restaurant-label">Restaurant</span>
+      <span class="restaurant-status" id="restaurant-status">Closed</span>
+    </button>
+    <div class="hud-next-goal" id="hud-next-goal" style="display:none;"></div>
+  </div>
+  <!-- Top right: player stats -->
+  <div class="hud-zone hud-top-right">
+    <div class="hud-stat"><span class="hud-stat-icon">$</span><span id="hud-cash">0</span></div>
+    <div class="hud-stat"><span class="hud-stat-icon">★</span><span id="hud-rating">—</span></div>
+    <div class="hud-stat hud-premium"><span class="hud-stat-icon">◆</span><span id="hud-premium">—</span></div>
+  </div>
+  <!-- Right rail: timed/meta actions -->
+  <div class="hud-zone hud-right-rail">
+    <button type="button" class="hud-rail-btn" data-module="DAILY_REWARDS" data-zone="rightRail" data-action="dailyRewards" title="Daily Rewards">
+      <span class="rail-icon">📅</span>
+      <span class="rail-badge" id="badge-daily" aria-hidden="true"></span>
+    </button>
+    <button type="button" class="hud-rail-btn" data-module="REWARDS" data-zone="rightRail" data-action="bonuses" title="Bonuses">
+      <span class="rail-icon">🎁</span>
+      <span class="rail-badge" id="badge-bonuses" aria-hidden="true"></span>
+    </button>
+    <button type="button" class="hud-rail-btn" data-module="SEASON" data-zone="rightRail" data-action="seasons" title="Seasons">
+      <span class="rail-icon">🌿</span>
+      <span class="rail-badge" id="badge-seasons" aria-hidden="true"></span>
+    </button>
+  </div>
+  <!-- Left rail: tools -->
+  <div class="hud-zone hud-left-rail">
+    <button type="button" class="hud-rail-btn" data-zone="leftRail" data-action="backpack" title="Backpack">🎒</button>
+    <button type="button" class="hud-rail-btn" data-zone="leftRail" data-action="catalog" title="Catalog">📋</button>
+    <button type="button" class="hud-rail-btn" data-module="ALBUM" data-zone="leftRail" data-action="album" title="Album">🖼</button>
+  </div>
+  <!-- Modal Root (Phase 2.3): dim background, one window at a time -->
+  <div class="modal-root" id="modal-root" aria-hidden="true">
+    <div class="window-shell" id="window-shell">
+      <div class="window-shell-header" id="window-shell-header">
+        <span class="window-shell-title" id="window-shell-title"></span>
+        <button type="button" class="window-shell-close" id="window-shell-close" title="Close" aria-label="Close">&times;</button>
+      </div>
+      <div class="window-tabs" id="window-tabs"></div>
+      <div class="window-content-slot" id="window-content-slot"></div>
+    </div>
+  </div>
+</div>
+
+<div class="mobile-controls">
+  <a id="mobile-interact-button" class="mobile-button">
+    <img src="{{CDN_ASSETS_URL}}/icons/target.png" />
+  </a>
+  <a id="mobile-jump-button" class="mobile-button">
+    <img src="{{CDN_ASSETS_URL}}/icons/jump.png" />
+  </a>
+</div>
+
+<script>
+(function() {
+  var THEME_COLORS = { blue: '#4a90d9', green: '#5cb85c', purple: '#9b59b6', orange: '#e67e22', gold: '#f1c40f', teal: '#1abc9c', red: '#e74c3c' };
+  var hud = document.getElementById('hud-root');
+  var modalRoot = document.getElementById('modal-root');
+  var windowShell = document.getElementById('window-shell');
+  var windowShellHeader = document.getElementById('window-shell-header');
+  var windowShellTitle = document.getElementById('window-shell-title');
+  var windowTabs = document.getElementById('window-tabs');
+  var windowContentSlot = document.getElementById('window-content-slot');
+  let state = { mode: 'PLAY', topCenter: {}, topRight: {}, rightRail: {}, leftRail: {}, activeModule: 'NONE', windowConfig: null, buildCatalog: null, buildSelection: null, buildDebug: null, moduleKeyHints: {} };
+
+  function getStubContent(module, s) {
+    if (module === 'SHOP') return '<div class="window-stub"><p class="window-stub-title">Shop</p><div class="window-stub-grid">' + Array(6).fill('<div class="window-stub-tile">Item</div>').join('') + '</div></div>';
+    if (module === 'ALBUM') return '<div class="window-stub"><p class="window-stub-title">Album</p><ul class="window-stub-list"><li>Placeholder item 1</li><li>Placeholder item 2</li></ul><p class="window-stub-progress">Fake progression: 12 / 50</p></div>';
+    if (module === 'REWARDS') return '<div class="window-stub"><p class="window-stub-title">Rewards</p><div class="window-stub-tiles">' + Array(8).fill('<div class="window-stub-tile">Reward</div>').join('') + '</div></div>';
+    if (module === 'DAILY_REWARDS') return '<div class="window-stub"><p class="window-stub-title">Daily Rewards</p><div class="window-stub-calendar">' + Array(7).fill('<div class="window-stub-day">Day</div>').join('') + '</div></div>';
+    if (module === 'SEASON') return '<div class="window-stub"><p class="window-stub-title">Season Pass</p><div class="window-stub-progress-bar"><div class="window-stub-progress-fill"></div></div><div class="window-stub-rewards">Rewards area</div></div>';
+    if (module === 'BUILD') {
+      var catalog = (s && s.buildCatalog) || [];
+      var sel = (s && s.buildSelection) || { itemType: null, rotation: 0 };
+      var catalogHtml = catalog.map(function(c, i) {
+        var num = i + 1;
+        var label = (c.itemType || '').replace(/_/g, ' ');
+        var cost = typeof c.cost === 'number' ? c.cost : 0;
+        var active = sel.itemType === c.itemType ? ' build-catalog-item-active' : '';
+        return '<button type="button" class="window-stub-btn build-catalog-item' + active + '" data-build-action="selectItem" data-item-type="' + (c.itemType || '') + '" data-item-index="' + num + '"><span class="build-catalog-num">' + num + '</span> ' + label + ' ($' + cost + ')</button>';
+      }).join('');
+      var previewHtml = '';
+      if (s && s.buildDebug && s.buildDebug.snappedPos && sel.itemType) {
+        var sp = s.buildDebug.snappedPos;
+        previewHtml = '<p class="build-preview-hint">Preview at ' + sp.x.toFixed(1) + ', ' + sp.y.toFixed(1) + ', ' + sp.z.toFixed(1) + (s.buildDebug.ghostSpawned ? ' (ghost visible)' : ' — look toward your plot to see ghost') + '</p>';
+      }
+      var debugHtml = '';
+      if (s && s.buildDebug) {
+        var d = s.buildDebug;
+        var hitStr = d.lastRaycastHit ? (d.lastRaycastHit.x.toFixed(1) + ',' + d.lastRaycastHit.y.toFixed(1) + ',' + d.lastRaycastHit.z.toFixed(1)) : 'none';
+        var snapStr = d.snappedPos ? (d.snappedPos.x.toFixed(1) + ',' + d.snappedPos.y.toFixed(1) + ',' + d.snappedPos.z.toFixed(1)) : 'none';
+        var placeStr = d.lastPlaceAttempt ? (new Date(d.lastPlaceAttempt.at).toISOString().slice(11, 23) + ' ' + d.lastPlaceAttempt.result) : '—';
+        debugHtml = '<div class="build-debug"><p class="build-debug-title">Debug (dev)</p><table class="build-debug-table"><tr><td>selectedItemType</td><td>' + (d.selectedItemType || '—') + '</td></tr><tr><td>buildModeActive</td><td>' + d.buildModeActive + '</td></tr><tr><td>lastRaycastHit</td><td>' + hitStr + '</td></tr><tr><td>snappedPos</td><td>' + snapStr + '</td></tr><tr><td>ghostSpawned</td><td>' + d.ghostSpawned + '</td></tr><tr><td>lastPlaceAttempt</td><td>' + placeStr + '</td></tr></table></div>';
+      }
+      return '<div class="window-stub build-panel"><p class="window-stub-title">Build</p><p class="build-catalog-hint">Press <strong>1&ndash;5</strong> to select</p><div class="build-catalog">' + catalogHtml + '</div><p class="build-selection">' + (sel.itemType ? 'Selected: ' + sel.itemType.replace(/_/g, ' ') + ' (rotate: R)' : 'Select an item (1&ndash;5)') + '</p>' + previewHtml + '<div class="build-actions"><button type="button" class="window-stub-btn" data-build-action="rotate">Rotate (R)</button><button type="button" class="window-stub-btn" data-build-action="place">Place (P)</button><button type="button" class="window-stub-btn" data-build-action="delete">Delete (D)</button></div><p class="build-keys-hint">R = rotate &nbsp; P or Space = place &nbsp; D = delete</p>' + debugHtml + '</div>';
+    }
+    if (module === 'RESTAURANT') {
+      var open = s.topCenter && s.topCenter.restaurantOpen;
+      var nextGoal = (s.topCenter && s.topCenter.nextGoal) || '';
+      var orders = (s.orders && s.orders.length) ? s.orders.map(function(o) { return '<li class="order-row"><span class="order-dish">' + (o.dishId || '') + '</span> <span class="order-status">' + (o.status || '') + '</span></li>'; }).join('') : '';
+      return '<div class="window-stub restaurant-panel"><p class="window-stub-title">Restaurant</p><p class="window-stub-status" id="restaurant-panel-status">' + (open ? 'Open' : 'Closed') + '</p>' +
+        (nextGoal ? '<p class="restaurant-next-goal">' + nextGoal + '</p>' : '') +
+        '<button type="button" class="window-stub-btn restaurant-toggle-btn" data-action="restaurantToggleOpen">' + (open ? 'Close' : 'Open') + ' for business</button>' +
+        (orders ? '<p class="window-stub-title">Orders</p><ul class="restaurant-orders">' + orders + '</ul>' : '') +
+        '<p class="restaurant-hint">Press <strong>E</strong> near stove or table to interact.</p></div>';
+    }
+    return '<div class="window-stub"><p>Content</p></div>';
+  }
+
+  function applyState(s) {
+    if (!s) return;
+    state = Object.assign({}, state, s);
+    var activeModule = s.activeModule || 'NONE';
+    var winConfig = s.windowConfig || null;
+    if (modalRoot) {
+      modalRoot.classList.toggle('visible', activeModule !== 'NONE');
+      modalRoot.classList.toggle('build-mode', activeModule === 'BUILD');
+      modalRoot.setAttribute('aria-hidden', activeModule === 'NONE');
+    }
+    if (activeModule !== 'NONE' && winConfig) {
+      if (windowShellTitle) windowShellTitle.textContent = winConfig.title;
+      if (windowShellHeader) {
+        var hex = THEME_COLORS[winConfig.themeColor] || THEME_COLORS.blue;
+        windowShellHeader.style.backgroundColor = hex;
+      }
+      if (windowTabs) {
+        if (winConfig.tabs && winConfig.tabs.length) {
+          windowTabs.innerHTML = winConfig.tabs.map(function(t) { return '<button type="button" class="window-tab" data-tab="' + t.id + '">' + t.label + '</button>'; }).join('');
+          windowTabs.style.display = 'flex';
+        } else {
+          windowTabs.innerHTML = '';
+          windowTabs.style.display = 'none';
+        }
+      }
+      if (windowContentSlot) windowContentSlot.innerHTML = getStubContent(activeModule, s);
+      var statusEl = document.getElementById('restaurant-panel-status');
+      if (statusEl && s.topCenter) statusEl.textContent = s.topCenter.restaurantOpen ? 'Open' : 'Closed';
+    }
+    if (s.mode === 'BUILD') {
+      if (typeof hytopia !== 'undefined' && typeof hytopia.lockPointer === 'function') hytopia.lockPointer(true);
+    } else {
+      if (typeof hytopia !== 'undefined' && typeof hytopia.lockPointer === 'function') hytopia.lockPointer(true);
+    }
+    if (s.topRight) {
+      var cashEl = document.getElementById('hud-cash');
+      var ratingEl = document.getElementById('hud-rating');
+      var premiumEl = document.getElementById('hud-premium');
+      if (cashEl) cashEl.textContent = Number(s.topRight.cash);
+      if (ratingEl) ratingEl.textContent = s.topRight.rating != null ? (typeof s.topRight.rating === 'number' ? s.topRight.rating.toFixed(1) : s.topRight.rating) : '—';
+      if (premiumEl) premiumEl.textContent = s.topRight.premiumCurrency != null ? s.topRight.premiumCurrency : '—';
+    }
+    if (s.topCenter) {
+      var statusEl = document.getElementById('restaurant-status');
+      if (statusEl) statusEl.textContent = s.topCenter.restaurantOpen ? 'Open' : 'Closed';
+      var nextGoalEl = document.getElementById('hud-next-goal');
+      if (nextGoalEl) {
+        nextGoalEl.textContent = s.topCenter.nextGoal || '';
+        nextGoalEl.style.display = (s.topCenter.nextGoal ? 'block' : 'none');
+      }
+      document.querySelectorAll('.hud-mode-btn').forEach(function(btn) {
+        var action = btn.getAttribute('data-action');
+        btn.classList.toggle('active', s.topCenter.activeMode === action);
+      });
+    }
+    document.querySelectorAll('.hud-rail-btn[data-module]').forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-module') === activeModule);
+    });
+    var hints = s.moduleKeyHints || {};
+    if (Object.keys(hints).length) {
+      document.querySelectorAll('.hud-mode-btn[data-action="build"]').forEach(function(btn) {
+        btn.textContent = 'Build' + (hints.BUILD ? ' (' + hints.BUILD + ')' : '');
+      });
+      document.querySelectorAll('.hud-mode-btn[data-action="shop"]').forEach(function(btn) {
+        btn.textContent = 'Shop' + (hints.SHOP ? ' (' + hints.SHOP + ')' : '');
+      });
+      var restLabel = document.querySelector('.hud-restaurant .restaurant-label');
+      if (restLabel) restLabel.textContent = 'Restaurant' + (hints.RESTAURANT ? ' (' + hints.RESTAURANT + ')' : '');
+      document.querySelectorAll('.hud-rail-btn[data-module]').forEach(function(btn) {
+        var mod = btn.getAttribute('data-module');
+        var key = (hints[mod] || '').toString();
+        var keyEl = btn.querySelector('.rail-key');
+        if (!keyEl) {
+          keyEl = document.createElement('span');
+          keyEl.className = 'rail-key';
+          keyEl.setAttribute('aria-label', key ? 'Key: ' + key : '');
+          btn.appendChild(keyEl);
+        }
+        keyEl.textContent = key;
+      });
+    }
+    if (s.rightRail) {
+      var badges = [document.getElementById('badge-daily'), document.getElementById('badge-bonuses'), document.getElementById('badge-seasons')];
+      ['dailyRewardsBadge', 'bonusesBadge', 'seasonsBadge'].forEach(function(key, i) {
+        if (badges[i]) badges[i].classList.toggle('show', !!s.rightRail[key]);
+      });
+    }
+  }
+
+  var ModuleRouter = {
+    activeModule: 'NONE',
+    _onChange: null,
+    open: function(module) {
+      hytopia.sendData({ action: 'toggleModule', module: module });
+    },
+    close: function() {
+      hytopia.sendData({ action: 'moduleClose' });
+    },
+    toggle: function(module) {
+      hytopia.sendData({ action: 'toggleModule', module: module });
+    },
+    onModuleChange: function(cb) {
+      this._onChange = cb;
+    }
+  };
+
+  function toggleModule(module) {
+    ModuleRouter.toggle(module);
+    hytopia.sendData({ action: 'toggleModule', module: module });
+  }
+  function closeModule() {
+    ModuleRouter.close();
+    hytopia.sendData({ action: 'moduleClose' });
+  }
+
+  hytopia.onData(function(data) {
+    var prev = ModuleRouter.activeModule;
+    applyState(data);
+    ModuleRouter.activeModule = (data && data.activeModule) ? data.activeModule : 'NONE';
+    if (ModuleRouter._onChange && prev !== ModuleRouter.activeModule) {
+      ModuleRouter._onChange(ModuleRouter.activeModule);
+    }
+  });
+
+  function isTextInputFocused() {
+    var el = document.activeElement;
+    if (!el) return false;
+    var tag = (el.tagName || '').toUpperCase();
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (el.getAttribute && el.getAttribute('contenteditable') === 'true') return true;
+    return false;
+  }
+
+  document.addEventListener('keydown', function(e) {
+    if (isTextInputFocused()) return;
+
+    var key = e.key;
+    if (key === 'Escape') {
+      if (state.activeModule !== 'NONE') {
+        e.preventDefault();
+        hytopia.sendData({ action: 'keybind', key: 'Escape' });
+      }
+      return;
+    }
+    if (state.activeModule === 'BUILD') {
+      if (key === 'r' || key === 'R') {
+        e.preventDefault();
+        hytopia.sendData({ action: 'buildRotate' });
+        return;
+      }
+      if (key === 'p' || key === 'P' || key === ' ') {
+        e.preventDefault();
+        hytopia.sendData({ action: 'buildPlace' });
+        return;
+      }
+      if (key === 'd' || key === 'D') {
+        e.preventDefault();
+        hytopia.sendData({ action: 'buildDelete' });
+        return;
+      }
+    }
+    if (state.activeModule === 'BUILD' && state.buildCatalog && state.buildCatalog.length) {
+      var num = key === '1' ? 1 : key === '2' ? 2 : key === '3' ? 3 : key === '4' ? 4 : key === '5' ? 5 : key === '6' ? 6 : 0;
+      if (num >= 1 && num <= state.buildCatalog.length) {
+        var item = state.buildCatalog[num - 1];
+        if (item && item.itemType) {
+          e.preventDefault();
+          hytopia.sendData({ action: 'buildSelectItem', itemType: item.itemType });
+        }
+        return;
+      }
+    }
+    if (key === 'e' || key === 'E') {
+      e.preventDefault();
+      hytopia.sendData({ action: 'interact' });
+      return;
+    }
+    var moduleKeys = ['b', 'B', 'o', 'O', 'r', 'R', 'p', 'P', 'n', 'N', 'v', 'V'];
+    if (moduleKeys.indexOf(key) !== -1) {
+      e.preventDefault();
+      hytopia.sendData({ action: 'keybind', key: key });
+    }
+  });
+
+  if (modalRoot) {
+    modalRoot.addEventListener('click', function(e) {
+      if (e.target === modalRoot) closeModule();
+    });
+  }
+  if (windowShell) {
+    windowShell.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var toggleBtn = e.target.closest('[data-action="restaurantToggleOpen"]');
+      if (toggleBtn) {
+        hytopia.sendData({ action: 'restaurantToggleOpen' });
+        return;
+      }
+      var btn = e.target.closest('[data-build-action]');
+      if (btn && state.activeModule === 'BUILD') {
+        var action = btn.getAttribute('data-build-action');
+        if (action === 'selectItem') {
+          var itemType = btn.getAttribute('data-item-type');
+          if (itemType) hytopia.sendData({ action: 'buildSelectItem', itemType: itemType });
+        } else if (action === 'rotate') {
+          hytopia.sendData({ action: 'buildRotate' });
+        } else if (action === 'place') {
+          hytopia.sendData({ action: 'buildPlace' });
+        } else if (action === 'delete') {
+          hytopia.sendData({ action: 'buildDelete' });
+        }
+      }
+    });
+  }
+  document.addEventListener('click', function(e) {
+    if (state.activeModule !== 'BUILD') return;
+    if (e.button !== 0) return;
+    if (e.target.closest('#hud-root') || e.target.closest('.modal-root.visible')) return;
+    hytopia.sendData({ action: 'buildPlace' });
+  });
+  document.addEventListener('contextmenu', function(e) {
+    if (state.activeModule !== 'BUILD') return;
+    var inModal = e.target.closest('.modal-root.visible');
+    if (inModal) return;
+    e.preventDefault();
+    hytopia.sendData({ action: 'buildDelete' });
+  });
+  if (document.getElementById('window-shell-close')) {
+    document.getElementById('window-shell-close').addEventListener('click', closeModule);
+  }
+
+  if (hud) {
+    hud.addEventListener('click', function(e) {
+      var btn = e.target.closest('.hud-mode-btn[data-zone="topCenter"], .hud-rail-btn');
+      if (btn && btn.getAttribute('data-zone') === 'topCenter') {
+        var action = btn.getAttribute('data-action');
+        if (action === 'build') toggleModule('BUILD');
+        else if (action === 'shop') toggleModule('SHOP');
+        else if (action === 'restaurant') toggleModule('RESTAURANT');
+        return;
+      }
+      if (btn && btn.hasAttribute('data-module')) {
+        toggleModule(btn.getAttribute('data-module'));
+        return;
+      }
+      if (btn && btn.classList.contains('hud-rail-btn')) {
+        var zone = btn.getAttribute('data-zone');
+        var action = btn.getAttribute('data-action');
+        if (zone && action) hytopia.sendData({ zone: zone, action: action });
+      }
+    });
+  }
+
+  const mobileInteractButton = document.getElementById('mobile-interact-button');
+  if (mobileInteractButton) {
+    mobileInteractButton.addEventListener('touchstart', function(e) {
+      e.preventDefault();
+      mobileInteractButton.classList.add('active');
+      hytopia.pressInput('ml', true);
+    });
+    mobileInteractButton.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      mobileInteractButton.classList.remove('active');
+      hytopia.pressInput('ml', false);
+    });
+  }
+  const mobileJumpButton = document.getElementById('mobile-jump-button');
+  if (mobileJumpButton) {
+    mobileJumpButton.addEventListener('touchstart', function(e) {
+      e.preventDefault();
+      mobileJumpButton.classList.add('active');
+      hytopia.pressInput(' ', true);
+    });
+    mobileJumpButton.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      mobileJumpButton.classList.remove('active');
+      hytopia.pressInput(' ', false);
+    });
+  }
+})();
+</script>
+
+<style>
+  * { box-sizing: border-box; }
+  .hud {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 100;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  .hud-zone {
+    position: absolute;
+    pointer-events: auto;
+  }
+  .hud-top-center {
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .hud-mode-btn {
+    padding: 10px 18px;
+    border: 2px solid rgba(255,255,255,0.4);
+    border-radius: 10px;
+    background: rgba(0,0,0,0.5);
+    color: rgba(255,255,255,0.95);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  }
+  .hud-mode-btn:hover {
+    background: rgba(0,0,0,0.65);
+    border-color: rgba(255,255,255,0.6);
+  }
+  .hud-mode-btn.active {
+    background: rgba(80,140,220,0.6);
+    border-color: rgba(255,255,255,0.8);
+  }
+  .hud-restaurant { display: flex; flex-direction: column; align-items: center; padding: 8px 14px; }
+  .restaurant-status { font-size: 11px; opacity: 0.9; }
+  .hud-next-goal { font-size: 12px; color: #f1c40f; margin-left: 12px; align-self: center; }
+  .restaurant-panel .restaurant-next-goal { color: #f1c40f; margin: 8px 0; }
+  .restaurant-toggle-btn { margin: 8px 0 !important; }
+  .restaurant-orders { list-style: none; padding: 0; margin: 8px 0; }
+  .order-row { padding: 4px 0; display: flex; gap: 12px; }
+  .order-status { opacity: 0.9; }
+  .restaurant-hint { font-size: 12px; opacity: 0.85; margin-top: 12px; }
+
+  .hud-top-right {
+    top: 16px;
+    right: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 14px;
+    background: rgba(0,0,0,0.5);
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.2);
+  }
+  .hud-stat {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: rgba(255,255,255,0.95);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .hud-stat-icon { opacity: 0.9; }
+  .hud-premium .hud-stat-icon { color: #e8c547; }
+
+  .hud-right-rail {
+    top: 50%;
+    right: 12px;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .hud-rail-btn {
+    width: 44px;
+    height: 44px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-radius: 10px;
+    background: rgba(0,0,0,0.5);
+    color: rgba(255,255,255,0.95);
+    font-size: 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .hud-rail-btn:hover {
+    background: rgba(0,0,0,0.65);
+    border-color: rgba(255,255,255,0.5);
+  }
+  .rail-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #e74c3c;
+    display: none;
+  }
+  .rail-badge.show { display: block; }
+  .rail-key {
+    position: absolute;
+    bottom: 2px;
+    right: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.85);
+    pointer-events: none;
+  }
+
+  .hud-left-rail {
+    top: 50%;
+    left: 12px;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .hud-left-rail .hud-rail-btn { font-size: 22px; }
+
+  .modal-root {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.2s, visibility 0.2s;
+    z-index: 200;
+  }
+  .modal-root.visible {
+    pointer-events: auto;
+    opacity: 1;
+    visibility: visible;
+  }
+  .modal-root.visible.build-mode {
+    background: rgba(0, 0, 0, 0.2) !important;
+    pointer-events: none;
+  }
+  .modal-root.visible.build-mode .window-shell {
+    pointer-events: auto;
+    background: rgba(20, 25, 35, 0.65) !important;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    backdrop-filter: blur(8px);
+  }
+  .window-shell {
+    background: rgba(0, 0, 0, 0.92);
+    border-radius: 12px;
+    min-width: 320px;
+    max-width: 90vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    overflow: hidden;
+  }
+  .window-shell-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    font-size: 17px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.98);
+  }
+  .window-shell-close {
+    background: rgba(255, 255, 255, 0.15);
+    border: none;
+    color: #fff;
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 6px;
+  }
+  .window-shell-close:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
+  .window-tabs {
+    display: none;
+    gap: 4px;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .window-tab {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .window-tab:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+  }
+  .window-content-slot {
+    padding: 20px;
+    overflow: auto;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 14px;
+  }
+  .window-stub { }
+  .window-stub-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+  .window-stub-grid, .window-stub-tiles, .window-stub-calendar {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .window-stub-tile, .window-stub-day {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+  }
+  .window-stub-list { margin: 0; padding-left: 20px; }
+  .window-stub-list li { margin: 6px 0; }
+  .window-stub-progress { margin-top: 12px; opacity: 0.85; }
+  .window-stub-progress-bar {
+    height: 8px;
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .window-stub-progress-fill {
+    width: 35%;
+    height: 100%;
+    background: #1abc9c;
+    border-radius: 4px;
+  }
+  .window-stub-rewards { padding: 12px; background: rgba(255, 255, 255, 0.06); border-radius: 8px; }
+  .window-stub-status { margin: 0; opacity: 0.9; }
+  .window-stub-btn { padding: 8px 14px; margin: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.3); background: rgba(0,0,0,0.4); color: #fff; cursor: pointer; font-size: 13px; }
+  .window-stub-btn:hover { background: rgba(255,255,255,0.15); }
+  .build-panel .build-catalog { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .build-catalog-hint { font-size: 12px; opacity: 0.9; margin: -4px 0 8px 0; color: rgba(255,255,255,0.85); }
+  .build-catalog-num { display: inline-block; min-width: 18px; padding: 2px 4px; margin-right: 4px; background: rgba(255,255,255,0.25); border-radius: 4px; font-weight: 700; font-size: 12px; }
+  .build-catalog-item { text-transform: capitalize; }
+  .build-catalog-item-active { background: rgba(74, 144, 217, 0.5); border-color: rgba(255,255,255,0.6); }
+  .build-catalog-item-active .build-catalog-num { background: rgba(255,255,255,0.4); }
+  .build-selection { margin: 8px 0; font-size: 13px; opacity: 0.9; }
+  .build-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .build-keys-hint { font-size: 11px; opacity: 0.85; margin: 10px 0 0 0; color: rgba(255,255,255,0.75); }
+  .build-debug { margin-top: 16px; padding: 10px; background: rgba(0,0,0,0.4); border-radius: 8px; font-size: 11px; font-family: monospace; }
+  .build-debug-title { margin: 0 0 8px 0; opacity: 0.9; }
+  .build-debug-table { width: 100%; border-collapse: collapse; }
+  .build-debug-table td { padding: 2px 8px 2px 0; }
+  .build-debug-table td:first-child { color: rgba(255,255,255,0.7); }
+
+  .mobile-controls { display: none; pointer-events: auto; }
+  body.mobile .mobile-controls {
+    display: flex;
+    gap: 14px;
+    position: fixed;
+    bottom: 40px;
+    right: 40px;
+  }
+  .mobile-button {
+    background-color: rgba(0, 0, 0, 0.5);
+    border-radius: 50%;
+    align-items: center;
+    justify-content: center;
+    display: flex;
+    width: 50px;
+    height: 50px;
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: bold;
+    color: rgba(255, 255, 255, 0.8);
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+    pointer-events: auto !important;
+  }
+  .mobile-button img { width: 22px; height: 22px; }
+  .mobile-button.active {
+    transform: scale(0.92);
+    background-color: rgba(0, 0, 0, 0.75);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+</style>

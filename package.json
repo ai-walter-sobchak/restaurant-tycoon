@@ -1,0 +1,27 @@
+{
+  "name": "restaurant-tycoon",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "hytopia build",
+    "dev": "npx hytopia start",
+    "start": "npx hytopia run",
+    "package": "hytopia package",
+    "upgrade-assets-library": "hytopia upgrade-assets-library",
+    "upgrade-project": "hytopia upgrade-project"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "hytopia": "^0.14.55"
+  },
+  "optionalDependencies": {
+    "@hytopia.com/assets": "^0.4.11"
+  }
+}
