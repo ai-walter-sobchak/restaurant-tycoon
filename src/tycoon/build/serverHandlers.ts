@@ -164,7 +164,7 @@ export async function handleDelete(
   if (entityId != null) {
     const entities = world.entityManager.getAllEntities();
     for (const e of entities) {
-      if (e.id === entityId) {
+      if (String(e.id) === String(entityId)) {
         e.despawn();
         break;
       }
@@ -194,6 +194,24 @@ export function findPlacedItemAt(plotId: PlotId, position: Vec3): PlacedItem | u
     const pz = Math.floor(p.position.z);
     return px === cellX && pz === cellZ;
   });
+}
+
+/** Find a placed item near a position (tolerant selector for aiming). */
+export function findPlacedItemNear(plotId: PlotId, position: Vec3, tolerance = 10.0): PlacedItem | undefined {
+  const state = getCachedPlotState(plotId);
+  if (!state) return undefined;
+  let best: PlacedItem | undefined = undefined;
+  let bestDist = Infinity;
+  for (const p of state.placedItems) {
+    const dx = p.position.x - position.x;
+    const dz = p.position.z - position.z;
+    const d = Math.sqrt(dx * dx + dz * dz);
+    if (d <= tolerance && d < bestDist) {
+      bestDist = d;
+      best = p;
+    }
+  }
+  return best;
 }
 
 /** Rebuild entities for a plot from its state (call on server start or when loading plot). */

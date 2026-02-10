@@ -32,6 +32,7 @@ import {
   ensurePlayerProfile,
   updatePlayerProfile,
 } from './persistence/playerProfile.js';
+import { MONEY_CHEAT_CODE } from './config.js';
 import { getPlotMeta, getPlotState, setPlotState, getDefaultPlotState } from './persistence/plotStore.js';
 import {
   getCachedPlotMeta,
@@ -62,15 +63,22 @@ import {
 import type { BuildCatalogItemState, BuildSelectionState, BuildDebugState } from './ui/useHUDState.js';
 import { getModuleForKey } from './input/KeybindManager.js';
 import type { ModuleKind } from './types.js';
-import { clearSimState } from './sim/state.js';
+import { clearSimState, getSimState } from './sim/state.js';
 import { runSimTick } from './sim/loop.js';
 import { handleInteract, clearCarriedOnLeave } from './sim/interact.js';
 import { hasMinimumSetup } from './sim/zones.js';
+import { runNPCSpawnerTick, cleanupNPCs, clearAllNPCs } from './sim/npc/NPCSpawner.js';
+import { updateNPCMovement } from './sim/npc/NPCController.js';
+import { despawnNPCEntity } from './sim/npc/NPCEntity.js';
+import BuildController from './build/BuildModeController.js';
 
 const DEV = typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production';
 
 /** In-memory: playerId -> { playerEntity, plotId } for later phases. */
 const playerMap = new Map<string, { playerEntity: Entity; plotId: PlotId | null }>();
+
+/** Command handler registry: command name -> handler function */
+const commandHandlers = new Map<string, (player: Player, args: string[]) => void | Promise<void>>();
 
 /** Tick counter per player for throttled BUILD HUD push (so client gets ghost/snapped state). */
 const buildTickCount = new Map<string, number>();
@@ -79,6 +87,10 @@ const BUILD_PUSH_INTERVAL_TICKS = 5;
 /** Sim tick throttle: last run time (ms) per plot. */
 const lastSimTickByPlot = new Map<PlotId, number>();
 const SIM_TICK_INTERVAL_MS = 500;
+
+/** NPC tick tracking: last run time (ms) per plot. */
+const lastNPCTickByPlot = new Map<PlotId, number>();
+const NPC_TICK_INTERVAL_MS = 33; // ~30 fps for NPC movement
 
 function defaultPlotMeta(plotId: PlotId): PlotMeta {
   return {
@@ -188,18 +200,35 @@ export async function initTycoon(world: World): Promise<void> {
   function pushHUDStateBuild(player: Player): void {
     if (getActiveModule(player) === 'BUILD') {
       let buildDebug: BuildDebugState | null = null;
-      if (DEV) {
-        const s = getBuildState(player.id);
-        const ghost = getGhostEntity(player.id);
-        buildDebug = {
-          selectedItemType: s.selectedItemType,
-          buildModeActive: getPlayerMode(player) === 'BUILD',
-          lastRaycastHit: s.lastRaycastHit ? { ...s.lastRaycastHit } : null,
-          snappedPos: s.lastGhostPosition ? { ...s.lastGhostPosition } : null,
-          ghostSpawned: !!(ghost?.isSpawned),
-          lastPlaceAttempt: s.lastPlaceAttempt ?? null,
-        };
-      }
+      const s = getBuildState(player.id);
+      const ghost = getGhostEntity(player.id);
+      // Always include debug info so HUD can show targeted refund (useful while testing).
+      buildDebug = {
+        selectedItemType: s.selectedItemType,
+        buildModeActive: getPlayerMode(player) === 'BUILD',
+        lastRaycastHit: s.lastRaycastHit ? { ...s.lastRaycastHit } : null,
+        snappedPos: s.lastGhostPosition ? { ...s.lastGhostPosition } : null,
+        ghostSpawned: !!(ghost?.isSpawned),
+        lastPlaceAttempt: s.lastPlaceAttempt ?? null,
+      };
+
+      // If there's a targeted placed item for deletion, compute the refund and include it in debug HUD.
+      try {
+        const targetId = s.lastDeleteTargetId ?? null;
+        buildDebug.targetedPlacedItemId = targetId;
+        buildDebug.targetedRefund = null;
+        if (targetId && player && player.id != null) {
+          const plotId = getPlayerProfile(player)?.plotId ?? null;
+          if (plotId != null) {
+            const plotState = getCachedPlotState(plotId);
+            const placed = plotState?.placedItems.find((p) => p.id === targetId) ?? null;
+            if (placed) {
+              const catalog = getCatalogItem(placed.catalogId);
+              if (catalog) buildDebug.targetedRefund = Math.floor(catalog.cost * 0.5);
+            }
+          }
+        }
+      } catch (_) {}
       pushHUDState(player, {
         buildCatalog: getBuildCatalogForHUD(),
         buildSelection: getBuildSelectionForHUD(player.id),
@@ -219,8 +248,7 @@ export async function initTycoon(world: World): Promise<void> {
     moduleClose(player);
     if (was === 'BUILD' && entry) {
       exitBuildMode(player, entry.playerEntity as PlayerEntity);
-      removeGhost(player.id);
-      clearBuildState(player.id);
+      BuildController.exitBuildMode(player, entry.playerEntity as PlayerEntity, 'moduleClose');
       buildTickCount.delete(player.id);
     }
     pushHUDStateBuild(player);
@@ -252,8 +280,6 @@ export async function initTycoon(world: World): Promise<void> {
       } else {
         if (entry) {
           exitBuildMode(player, entry.playerEntity as PlayerEntity);
-          removeGhost(player.id);
-          clearBuildState(player.id);
           buildTickCount.delete(player.id);
         }
         pushHUDStateBuild(player);
@@ -271,8 +297,7 @@ export async function initTycoon(world: World): Promise<void> {
     ) {
       if (current === 'BUILD' && entry) {
         exitBuildMode(player, entry.playerEntity as PlayerEntity);
-        removeGhost(player.id);
-        clearBuildState(player.id);
+        BuildController.exitBuildMode(player, entry.playerEntity as PlayerEntity, 'moduleSwitch');
         buildTickCount.delete(player.id);
       }
       moduleToggle(player, module);
@@ -285,53 +310,13 @@ export async function initTycoon(world: World): Promise<void> {
     const players = world.playerManager?.getConnectedPlayersByWorld?.(world) ?? PlayerManager.instance?.getConnectedPlayersByWorld?.(world) ?? [];
     for (const player of players) {
       const entry = playerMap.get(player.id);
-      if (!entry || getActiveModule(player) !== 'BUILD') continue;
-      const plot = entry.plotId != null ? getPlot(entry.plotId) : null;
-      const groundY = plot?.bounds.min.y ?? Math.max(0, entry.playerEntity.position.y - 1);
-      const ray = getPointerRayFromPlayer(player, entry.playerEntity);
-      const hit = raycastBuildSurface(world, ray, { groundY });
-      const state = getBuildState(player.id);
-      let lastGhostPosition: Vec3 | null = null;
-      let lastDeleteTargetId: string | null = null;
-      if (hit) {
-        const snapped = plot ? snapToGridPlotRelative(plot, hit) : { x: Math.floor(hit.x) + 0.5, y: hit.y, z: Math.floor(hit.z) + 0.5 };
-        const clamped = plot ? clampToPlot(plot, snapped) : snapped;
-        if (entry.plotId != null) {
-          lastDeleteTargetId = findPlacedItemAt(entry.plotId, clamped)?.id ?? null;
-        }
-        const itemType = state.selectedItemType;
-        if (itemType) {
-          const catalog = getCatalogItem(itemType);
-          if (catalog) {
-            lastGhostPosition = clamped;
-            const valid = plot
-              ? (() => {
-                  const plotState = getCachedPlotState(entry.plotId!);
-                  const existing = plotState?.placedItems ?? [];
-                  return isPointInPlot(plot, clamped) && !overlapsExisting(clamped, catalog.footprint, state.placementRotation, existing);
-                })()
-              : false;
-            updateGhost(
-              player.id,
-              world,
-              itemType,
-              clamped,
-              state.placementRotation,
-              valid
-            );
-          }
-        }
-      } else if (state.selectedItemType) {
-        removeGhost(player.id);
+      if (!entry) continue;
+      // delegate build tick handling to controller (centralized, tick-driven preview)
+      try {
+        BuildController.tickForPlayer(world, { player, entity: entry.playerEntity, plotId: entry.plotId }, buildTickCount, pushHUDStateBuild, BUILD_PUSH_INTERVAL_TICKS);
+      } catch (e) {
+        if (DEV) console.log('[BuildController] tick error', e);
       }
-      setBuildState(player.id, {
-        lastGhostPosition,
-        lastDeleteTargetId,
-        lastRaycastHit: hit ? { ...hit } : null,
-      });
-      const t = (buildTickCount.get(player.id) ?? 0) + 1;
-      buildTickCount.set(player.id, t);
-      if (t % BUILD_PUSH_INTERVAL_TICKS === 0) pushHUDStateBuild(player);
     }
     const now = Date.now();
     for (const player of players) {
@@ -346,6 +331,53 @@ export async function initTycoon(world: World): Promise<void> {
       const profile = ensurePlayerProfile(player);
       runSimTick(plotId, state, now, state.ownerId, profile.unlocks);
       pushHUDStateBuild(player);
+    }
+
+    // NPC spawner and movement tick (higher frequency than sim tick for smooth movement)
+    for (const player of players) {
+      const entry = playerMap.get(player.id);
+      if (!entry || entry.plotId == null) continue;
+      const plotId = entry.plotId;
+      const state = getCachedPlotState(plotId);
+      if (!state?.restaurantSettings.isOpen || state.ownerId !== player.id) continue;
+      const sim = getSimState(plotId);
+      const plot = getPlot(plotId);
+      
+      // Run NPC spawner (lower frequency)
+      const lastSpawner = lastNPCTickByPlot.get(plotId) ?? 0;
+      if (now - lastSpawner >= 100) { // Spawn tick every 100ms
+        lastNPCTickByPlot.set(plotId, now);
+        runNPCSpawnerTick(world, state, sim, now, plot?.entrance, plot?.bounds.max);
+      }
+
+      // Update NPC movement (every frame, delta-time based)
+      const npcToRemove: string[] = [];
+      for (const [npcId, npc] of sim.npcs.entries()) {
+        const entity = world.entities?.get(npc.entityId);
+        if (!entity?.isSpawned) {
+          npcToRemove.push(npcId);
+          continue;
+        }
+        const deltaTimeMs = NPC_TICK_INTERVAL_MS; // Use fixed delta for consistency
+        const { arrived } = updateNPCMovement(npc, entity, deltaTimeMs);
+        if (arrived) {
+          sim.lastArrivedNpcId = npcId;
+        }
+      }
+      
+      // Clean up NPCs that have aged beyond arrival delay
+      const cleaned = cleanupNPCs(sim, now);
+      for (const npcId of cleaned) {
+        const npc = sim.npcs.get(npcId) ?? { debugName: 'unknown', entityId: 0 };
+        const entity = world.entities?.get(npc.entityId);
+        if (entity) despawnNPCEntity(entity, npcId, npc.debugName);
+        npcToRemove.push(npcId);
+      }
+      
+      // Remove dead entities
+      for (const npcId of npcToRemove) {
+        sim.npcs.delete(npcId);
+      }
     }
   });
 
@@ -414,50 +446,38 @@ export async function initTycoon(world: World): Promise<void> {
       }
       if (data?.action === 'buildSelectItem' && typeof data?.itemType === 'string') {
         if (getActiveModule(player) !== 'BUILD') return;
-        setBuildState(player.id, { selectedItemType: data.itemType });
+        BuildController.selectItem(player, data.itemType);
         if (DEV) console.log('[Build] setSelectedItem', data.itemType);
         pushHUDStateBuild(player);
         return;
       }
       if (data?.action === 'buildRotate') {
         if (getActiveModule(player) !== 'BUILD') return;
-        const s = getBuildState(player.id);
-        setBuildState(player.id, { placementRotation: nextRotation(s.placementRotation) });
+        BuildController.rotateSelection(player);
         pushHUDStateBuild(player);
         return;
       }
       if (data?.action === 'buildPlace') {
-        if (getActiveModule(player) !== 'BUILD' || !entry?.plotId) return;
-        const s = getBuildState(player.id);
-        if (!s.selectedItemType || !s.lastGhostPosition) {
-          world.chatManager.sendPlayerMessage(player, 'Select an item and aim at a valid spot.', 'FF6666');
+        if (getActiveModule(player) !== 'BUILD' || entry?.plotId == null) {
+          console.log('[Main] buildPlace ignored from', player.id, 'activeModule=', getActiveModule(player), 'plotId=', entry?.plotId);
           return;
         }
-        const result = await handlePlace(
-          world,
-          player,
-          entry.plotId,
-          s.selectedItemType,
-          s.lastGhostPosition,
-          s.placementRotation
-        );
-        const resultStr = result.ok ? 'ok' : (result.error ?? 'rejected');
-        setBuildState(player.id, { lastPlaceAttempt: { at: Date.now(), result: resultStr } });
-        if (result.ok) {
-          world.chatManager.sendPlayerMessage(player, 'Placed.', '00FF00');
-          if (DEV) console.log('[Build] place accepted');
-        } else {
+        console.log('[Main] buildPlace received from', player.id);
+        const result = await BuildController.attemptPlace(world, player, { player, entity: entry.playerEntity as Entity, plotId: entry.plotId });
+        if (!result.ok) {
           world.chatManager.sendPlayerMessage(player, result.error ?? 'Place failed.', 'FF6666');
           if (DEV) console.log('[Build] place rejected', result.error);
+        } else {
+          world.chatManager.sendPlayerMessage(player, 'Placed.', '00FF00');
+          if (DEV) console.log('[Build] place accepted');
         }
         pushHUDStateBuild(player);
         return;
       }
       if (data?.action === 'buildDelete') {
-        if (getActiveModule(player) !== 'BUILD' || !entry?.plotId) return;
+        if (getActiveModule(player) !== 'BUILD' || entry?.plotId == null) return;
         const plotId = entry.plotId;
-        let placedItemId: string | undefined =
-          typeof data?.placedItemId === 'string' ? data.placedItemId : undefined;
+        let placedItemId: string | undefined = typeof data?.placedItemId === 'string' ? data?.placedItemId : undefined;
         if (!placedItemId && data?.position && typeof data.position === 'object') {
           const pos = data.position as { x?: number; y?: number; z?: number };
           if (typeof pos.x === 'number' && typeof pos.z === 'number') {
@@ -465,21 +485,15 @@ export async function initTycoon(world: World): Promise<void> {
             placedItemId = at?.id;
           }
         }
-        if (!placedItemId) placedItemId = getBuildState(player.id).lastDeleteTargetId ?? undefined;
-        if (!placedItemId) {
-          world.chatManager.sendPlayerMessage(player, 'Aim at a placed item to delete.', 'FF6666');
+        const res = await BuildController.attemptDelete(world, player, { player, entity: entry.playerEntity as Entity, plotId: entry.plotId }, placedItemId);
+        if (res == null) {
           pushHUDStateBuild(player);
           return;
         }
-        const result = await handleDelete(world, player, plotId, placedItemId);
-        if (result.ok) {
-          world.chatManager.sendPlayerMessage(
-            player,
-            result.refund ? `Deleted. Refund $${result.refund}.` : 'Deleted.',
-            '00FF00'
-          );
+        if (res.ok) {
+          world.chatManager.sendPlayerMessage(player, res.refund ? `Deleted. Refund $${res.refund}.` : 'Deleted.', '00FF00');
         } else {
-          world.chatManager.sendPlayerMessage(player, result.error ?? 'Delete failed.', 'FF6666');
+          world.chatManager.sendPlayerMessage(player, res.error ?? 'Delete failed.', 'FF6666');
         }
         pushHUDStateBuild(player);
         return;
@@ -509,7 +523,11 @@ export async function initTycoon(world: World): Promise<void> {
           restaurantSettings: { ...plotState.restaurantSettings, isOpen: opening },
         });
         updatePlayerProfile(player, { restaurantOpen: opening });
-        if (!opening) clearSimState(plotId);
+        if (!opening) {
+          clearSimState(plotId);
+          const sim = getSimState(plotId);
+          clearAllNPCs(sim);
+        }
         world.chatManager.sendPlayerMessage(player, opening ? 'Restaurant is open!' : 'Restaurant closed.', opening ? '00FF00' : 'AAAAAA');
         pushHUDStateBuild(player);
         return;
@@ -523,6 +541,34 @@ export async function initTycoon(world: World): Promise<void> {
         const result = handleInteract(player, entry!.plotId, { x: pos.x, y: pos.y, z: pos.z });
         world.chatManager.sendPlayerMessage(player, result.message, result.ok ? '00FF00' : 'FFAA00');
         pushHUDStateBuild(player);
+        return;
+      }
+      if (data?.action === 'chatCommand' && typeof data?.command === 'string') {
+        const command = data.command as string;
+        // Parse command: format is "/command arg1 arg2 ..."
+        const parts = command.trim().split(/\s+/);
+        const cmd = parts[0]?.toLowerCase();
+        const args = parts.slice(1);
+        console.log('[ChatCommand] from', player.id, 'cmd:', cmd, 'args:', args);
+        
+        if (cmd && cmd.startsWith('/')) {
+          const handler = commandHandlers.get(cmd);
+          if (handler) {
+            try {
+              const result = handler(player, args);
+              if (result instanceof Promise) {
+                await result;
+              }
+            } catch (e) {
+              console.error('[ChatCommand] error executing command:', e);
+              world.chatManager.sendPlayerMessage(player, 'Error executing command.', 'FF6666');
+            }
+          } else {
+            world.chatManager.sendPlayerMessage(player, 'Unknown command: ' + cmd, 'FF6666');
+          }
+        } else {
+          world.chatManager.sendPlayerMessage(player, 'Commands must start with /', 'FF6666');
+        }
         return;
       }
       handleHUDData(payload);
@@ -548,8 +594,7 @@ export async function initTycoon(world: World): Promise<void> {
     clearCarriedOnLeave(player.id);
     await flushAllDirty();
     await flushAllDirtyState();
-    removeGhost(player.id);
-    clearBuildState(player.id);
+    BuildController.cleanupPlayer(player.id);
     buildTickCount.delete(player.id);
     clearPlayerMode(player.id);
     clearModule(player.id);
@@ -583,7 +628,13 @@ export async function initTycoon(world: World): Promise<void> {
     pushHUDStateBuild(player);
   });
 
-  world.chatManager.registerCommand('/build', (player) => {
+  // Helper to register command in both the chat manager and our registry
+  const registerChatCommand = (name: string, handler: (player: Player, args: string[]) => void | Promise<void>) => {
+    commandHandlers.set(name, handler as (player: Player, args: string[]) => void);
+    world.chatManager.registerCommand(name, handler);
+  };
+
+  registerChatCommand('/build', (player) => {
     const profile = getPlayerProfile(player) ?? ensurePlayerProfile(player);
     if (profile?.plotId == null) {
       world.chatManager.sendPlayerMessage(player, 'You need a plot to build. Use /plot to check.', 'FF6666');
@@ -600,7 +651,7 @@ export async function initTycoon(world: World): Promise<void> {
     }
   });
 
-  world.chatManager.registerCommand('/plot', (player) => {
+  registerChatCommand('/plot', (player) => {
     const profile = getPlayerProfile(player) ?? ensurePlayerProfile(player);
     const plotId = profile?.plotId ?? null;
     if (plotId === null) {
@@ -620,7 +671,7 @@ export async function initTycoon(world: World): Promise<void> {
     );
   });
 
-  world.chatManager.registerCommand('/plots', (player) => {
+  registerChatCommand('/plots', (player) => {
     const lines: string[] = [];
     for (const p of PLOTS) {
       const meta = getCachedPlotMeta(p.plotId) ?? defaultPlotMeta(p.plotId);
@@ -633,13 +684,12 @@ export async function initTycoon(world: World): Promise<void> {
     world.chatManager.sendPlayerMessage(player, text, 'AAAAAA');
   });
 
-  world.chatManager.registerCommand('/open', (player, args) => {
+  registerChatCommand('/open', (player, args) => {
     const target = (args[0] || '').toLowerCase();
     const entry = playerMap.get(player.id);
     if (getActiveModule(player) === 'BUILD' && entry) {
       exitBuildMode(player, entry.playerEntity as PlayerEntity);
-      removeGhost(player.id);
-      clearBuildState(player.id);
+      BuildController.exitBuildMode(player, entry.playerEntity as PlayerEntity, '/open');
     }
     if (target === 'shop') {
       moduleOpen(player, 'SHOP');
@@ -654,15 +704,14 @@ export async function initTycoon(world: World): Promise<void> {
     }
   });
 
-  world.chatManager.registerCommand('/play', (player) => {
+  registerChatCommand('/play', (player) => {
     const entry = playerMap.get(player.id);
     const wasModule = getActiveModule(player);
     const wasBuild = getPlayerMode(player) === 'BUILD';
     moduleClose(player);
     if (wasBuild && entry) {
       exitBuildMode(player, entry.playerEntity as PlayerEntity);
-      removeGhost(player.id);
-      clearBuildState(player.id);
+      BuildController.exitBuildMode(player, entry.playerEntity as PlayerEntity, '/play');
     }
     pushHUDStateBuild(player);
     if (wasModule !== 'NONE' || wasBuild) {
@@ -671,7 +720,7 @@ export async function initTycoon(world: World): Promise<void> {
     }
   });
 
-  world.chatManager.registerCommand('/addcash', (player, args) => {
+  registerChatCommand('/addcash', (player, args) => {
     const amount = Math.floor(Number(args[0]) || 0);
     if (amount <= 0) {
       world.chatManager.sendPlayerMessage(player, 'Usage: /addcash <amount>', 'FF6666');
@@ -681,5 +730,48 @@ export async function initTycoon(world: World): Promise<void> {
     updatePlayerProfile(player, { cash: profile.cash + amount });
     pushHUDStateBuild(player);
     world.chatManager.sendPlayerMessage(player, `Added $${amount}. Cash: $${profile.cash + amount}`, '00FF00');
+  });
+
+  registerChatCommand('/money', (player, args) => {
+    const code = args[0] || '';
+    const amount = Math.floor(Number(args[1]) || 0);
+    
+    if (code !== MONEY_CHEAT_CODE) {
+      world.chatManager.sendPlayerMessage(player, 'Invalid cheat code.', 'FF6666');
+      return;
+    }
+    
+    if (amount <= 0) {
+      world.chatManager.sendPlayerMessage(player, 'Usage: /money <code> <amount>', 'FF6666');
+      return;
+    }
+    
+    const profile = ensurePlayerProfile(player);
+    const newCash = profile.cash + amount;
+    updatePlayerProfile(player, { cash: newCash });
+    pushHUDStateBuild(player);
+    world.chatManager.sendPlayerMessage(player, `💰 Added $${amount}. Cash: $${newCash}`, '00FF00');
+    console.log(`[Money Command] Player ${player.id} added $${amount} (code: ${code})`);
+  });
+
+  registerChatCommand('/testplace', async (player) => {
+    const entry = playerMap.get(player.id);
+    if (!entry || entry.plotId == null) {
+      world.chatManager.sendPlayerMessage(player, 'No plot / player entry available.', 'FF6666');
+      return;
+    }
+    const s = getBuildState(player.id);
+    if (!s.selectedItemType || !s.lastGhostPosition) {
+      world.chatManager.sendPlayerMessage(player, 'Select an item and aim at a valid spot first.', 'FF6666');
+      return;
+    }
+    world.chatManager.sendPlayerMessage(player, 'Attempting test place...', 'AAAAAA');
+    console.log('[TestPlace] invoked by', player.id, 'item=', s.selectedItemType, 'pos=', s.lastGhostPosition);
+    const result = await BuildController.attemptPlace(world, player, { player, entity: entry.playerEntity as Entity, plotId: entry.plotId });
+    if (result.ok) {
+      world.chatManager.sendPlayerMessage(player, 'Test place successful.', '00FF00');
+    } else {
+      world.chatManager.sendPlayerMessage(player, 'Test place failed: ' + (result.error ?? 'unknown'), 'FF6666');
+    }
   });
 }

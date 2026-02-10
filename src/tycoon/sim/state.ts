@@ -13,9 +13,13 @@ export function getSimState(plotId: PlotId): PlotSimState {
       orders: [],
       customers: [],
       stoveOrder: {},
+      npcs: new Map(),
       orderCounter: 0,
       customerCounter: 0,
+      npcCounter: 0,
       lastSpawnAt: 0,
+      npcLastSpawnAt: 0,
+      lastArrivedNpcId: null,
     };
     simStateByPlot.set(plotId, s);
   }

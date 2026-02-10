@@ -7,6 +7,7 @@ import type { Player } from 'hytopia';
 import type { PlayerEntity } from 'hytopia';
 import type { PlayerMode } from './types.js';
 import { getPlayerProfile, updatePlayerProfile } from './persistence/playerProfile.js';
+import BuildController from './build/BuildModeController.js';
 
 const modeMap = new Map<string, PlayerMode>();
 
@@ -28,6 +29,7 @@ export function enterBuildMode(player: Player, entity: PlayerEntity): void {
   setPlayerMode(player, 'BUILD');
   entity.setTickWithPlayerInputEnabled(false);
   player.ui.lockPointer(true);
+  BuildController.enterBuildMode(player, entity, null);
   if (DEV) console.log('[Build] enterBuildMode', player.id);
 }
 
@@ -38,6 +40,7 @@ export function exitBuildMode(player: Player, entity: PlayerEntity): void {
   setPlayerMode(player, 'PLAY');
   entity.setTickWithPlayerInputEnabled(true);
   player.ui.lockPointer(true);
+  BuildController.exitBuildMode(player, entity, 'manual');
   if (DEV) console.log('[Build] exitBuildMode', player.id);
 }
 
@@ -46,4 +49,5 @@ export function exitBuildMode(player: Player, entity: PlayerEntity): void {
  */
 export function clearPlayerMode(playerId: string): void {
   modeMap.delete(playerId);
+  BuildController.cleanupPlayer(playerId);
 }

@@ -12,6 +12,8 @@ export const MAP_PLOT_FLOOR_Y = 1;
 export const STARTING_CASH = 500;
 export const PLOT_SAVE_DEBOUNCE_MS = 3000;
 export const RATING_MAX = 5;
+/** Cheat code for /money command. Change this to your own secret code. */
+export const MONEY_CHEAT_CODE = 'cheats';
 
 /**
  * Lobby spawn when no plot is available (world position).
@@ -43,3 +45,14 @@ export const SIM_RATING_WALKOUT_PENALTY = 0.05;
 export const MENU: Record<string, { price: number; cookTimeMs?: number }> = {
   dish_burger: { price: 15, cookTimeMs: 8_000 },
 };
+
+// --- NPCs (Phase 5A) ---
+/** NPC spawn interval (ms) when restaurant is open. */
+export const NPC_SPAWN_INTERVAL_MS = 6_000;
+/** Max concurrent NPCs per plot. */
+export const NPC_MAX_CONCURRENT = 5;
+/** NPC movement speed (units/second). */
+export const NPC_MOVEMENT_SPEED = 3.0;
+/** Time (ms) NPC stays at target before cleanup. */
+export const NPC_ARRIVE_CLEANUP_DELAY_MS = 8_000;
+

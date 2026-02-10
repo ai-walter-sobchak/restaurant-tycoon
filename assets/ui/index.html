@@ -17,6 +17,7 @@
     <div class="hud-stat"><span class="hud-stat-icon">$</span><span id="hud-cash">0</span></div>
     <div class="hud-stat"><span class="hud-stat-icon">★</span><span id="hud-rating">—</span></div>
     <div class="hud-stat hud-premium"><span class="hud-stat-icon">◆</span><span id="hud-premium">—</span></div>
+    <div id="net-indicator" title="Disconnected" style="display:inline-block;width:12px;height:12px;border-radius:50%;margin-left:10px;background:#e74c3c;border:1px solid rgba(0,0,0,0.2)"></div>
   </div>
   <!-- Right rail: timed/meta actions -->
   <div class="hud-zone hud-right-rail">
@@ -50,6 +51,15 @@
       <div class="window-content-slot" id="window-content-slot"></div>
     </div>
   </div>
+  <!-- Chat Input (bottom left) -->
+  <div class="chat-container" id="chat-container">
+    <div class="chat-input-wrapper">
+      <span class="chat-label">/</span>
+      <input type="text" id="chat-input" class="chat-input" placeholder="Type command (press T)..." maxlength="100">
+      <span class="chat-hint">(T or Enter to submit)</span>
+    </div>
+  </div>
+  <button type="button" class="chat-button" id="chat-button" title="Chat (T)">💬</button>
 </div>
 
 <div class="mobile-controls">
@@ -100,9 +110,11 @@
         var hitStr = d.lastRaycastHit ? (d.lastRaycastHit.x.toFixed(1) + ',' + d.lastRaycastHit.y.toFixed(1) + ',' + d.lastRaycastHit.z.toFixed(1)) : 'none';
         var snapStr = d.snappedPos ? (d.snappedPos.x.toFixed(1) + ',' + d.snappedPos.y.toFixed(1) + ',' + d.snappedPos.z.toFixed(1)) : 'none';
         var placeStr = d.lastPlaceAttempt ? (new Date(d.lastPlaceAttempt.at).toISOString().slice(11, 23) + ' ' + d.lastPlaceAttempt.result) : '—';
-        debugHtml = '<div class="build-debug"><p class="build-debug-title">Debug (dev)</p><table class="build-debug-table"><tr><td>selectedItemType</td><td>' + (d.selectedItemType || '—') + '</td></tr><tr><td>buildModeActive</td><td>' + d.buildModeActive + '</td></tr><tr><td>lastRaycastHit</td><td>' + hitStr + '</td></tr><tr><td>snappedPos</td><td>' + snapStr + '</td></tr><tr><td>ghostSpawned</td><td>' + d.ghostSpawned + '</td></tr><tr><td>lastPlaceAttempt</td><td>' + placeStr + '</td></tr></table></div>';
+        var refundStr = (typeof d.targetedRefund === 'number') ? ('$' + d.targetedRefund) : '—';
+        debugHtml = '<div class="build-debug"><p class="build-debug-title">Debug (dev)</p><table class="build-debug-table"><tr><td>selectedItemType</td><td>' + (d.selectedItemType || '—') + '</td></tr><tr><td>buildModeActive</td><td>' + d.buildModeActive + '</td></tr><tr><td>lastRaycastHit</td><td>' + hitStr + '</td></tr><tr><td>snappedPos</td><td>' + snapStr + '</td></tr><tr><td>ghostSpawned</td><td>' + d.ghostSpawned + '</td></tr><tr><td>lastPlaceAttempt</td><td>' + placeStr + '</td></tr><tr><td>targetedPlacedItem</td><td>' + (d.targetedPlacedItemId || '—') + '</td></tr><tr><td>targetedRefund</td><td>' + refundStr + '</td></tr></table></div>';
       }
-      return '<div class="window-stub build-panel"><p class="window-stub-title">Build</p><p class="build-catalog-hint">Press <strong>1&ndash;5</strong> to select</p><div class="build-catalog">' + catalogHtml + '</div><p class="build-selection">' + (sel.itemType ? 'Selected: ' + sel.itemType.replace(/_/g, ' ') + ' (rotate: R)' : 'Select an item (1&ndash;5)') + '</p>' + previewHtml + '<div class="build-actions"><button type="button" class="window-stub-btn" data-build-action="rotate">Rotate (R)</button><button type="button" class="window-stub-btn" data-build-action="place">Place (P)</button><button type="button" class="window-stub-btn" data-build-action="delete">Delete (D)</button></div><p class="build-keys-hint">R = rotate &nbsp; P or Space = place &nbsp; D = delete</p>' + debugHtml + '</div>';
+      var refundStrMain = (s && s.buildDebug && typeof s.buildDebug.targetedRefund === 'number') ? ('$' + s.buildDebug.targetedRefund) : '—';
+      return '<div class="window-stub build-panel"><p class="window-stub-title">Build</p><p class="build-catalog-hint">Press <strong>1&ndash;5</strong> to select</p><div class="build-catalog">' + catalogHtml + '</div><p class="build-selection">' + (sel.itemType ? 'Selected: ' + sel.itemType.replace(/_/g, ' ') + ' (rotate: R)' : 'Select an item (1&ndash;5)') + '</p>' + previewHtml + '<div class="build-actions"><button type="button" class="window-stub-btn" data-build-action="rotate">Rotate (R)</button><button type="button" class="window-stub-btn" data-build-action="place">Place (Enter)</button><button type="button" class="window-stub-btn" data-build-action="delete">Delete (D)</button></div><p class="build-refund">Refund: ' + refundStrMain + '</p><p class="build-keys-hint">Enter = place &nbsp; R = rotate &nbsp; D = delete</p>' + debugHtml + '</div>';
     }
     if (module === 'RESTAURANT') {
       var open = s.topCenter && s.topCenter.restaurantOpen;
@@ -236,6 +248,14 @@
     var prev = ModuleRouter.activeModule;
     applyState(data);
     ModuleRouter.activeModule = (data && data.activeModule) ? data.activeModule : 'NONE';
+    // Mark server as connected when we receive any data
+    try {
+      var netEl = document.getElementById('net-indicator');
+      if (netEl) {
+        netEl.style.background = '#2ecc71';
+        netEl.title = 'Connected to server';
+      }
+    } catch (_) {}
     if (ModuleRouter._onChange && prev !== ModuleRouter.activeModule) {
       ModuleRouter._onChange(ModuleRouter.activeModule);
     }
@@ -247,10 +267,71 @@
     var tag = (el.tagName || '').toUpperCase();
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
     if (el.getAttribute && el.getAttribute('contenteditable') === 'true') return true;
-    return false;
+     // Check if chat input is focused
+     var chatInput = document.getElementById('chat-input');
+     if (chatInput && el === chatInput) return true;
+     return false;
+  }
+
+  // Helper to send a debounced buildPlace action and log in console for debugging.
+  var _lastBuildPlaceSentAt = 0;
+  // Queue + retry support: in some cases network isn't open when player presses P.
+  var _buildPlaceQueue = [];
+  function tryFlushBuildPlaceQueue() {
+    if (!_buildPlaceQueue.length) return;
+    var item = _buildPlaceQueue[0];
+    try {
+      hytopia.sendData({ action: 'buildPlace' });
+      console.log('[UI] sendBuildPlace -> flushed queued buildPlace');
+      // mark indicator green when we successfully send
+      try { var netEl = document.getElementById('net-indicator'); if (netEl) { netEl.style.background = '#2ecc71'; netEl.title = 'Connected to server'; } } catch(_) {}
+      _buildPlaceQueue.shift();
+    } catch (err) {
+      // leave in queue and retry later
+      if (item.retries >= 5) {
+        console.warn('[UI] sendBuildPlace -> dropping after retries', item);
+        _buildPlaceQueue.shift();
+        return;
+      }
+      item.retries++;
+      var backoff = 200 * Math.pow(2, item.retries);
+      setTimeout(tryFlushBuildPlaceQueue, backoff);
+      console.warn('[UI] sendBuildPlace -> retrying in', backoff, 'ms', err);
+    }
+  }
+
+  function sendBuildPlace() {
+    var now = Date.now();
+    if (now - _lastBuildPlaceSentAt < 250) return; // debounce duplicate sends
+    _lastBuildPlaceSentAt = now;
+    console.log('[UI] sendBuildPlace -> queuing buildPlace');
+    _buildPlaceQueue.push({ at: now, retries: 0 });
+    tryFlushBuildPlaceQueue();
+    // also schedule a retry in case connection opens later
+    setTimeout(tryFlushBuildPlaceQueue, 300);
   }
 
   document.addEventListener('keydown', function(e) {
+    var chatInput = document.getElementById('chat-input');
+    var chatContainer = document.getElementById('chat-container');
+    
+    // Handle T key to open/focus chat (only if not already in a text input)
+    if ((e.key === 't' || e.key === 'T') && !isTextInputFocused()) {
+      e.preventDefault();
+      if (chatContainer && chatInput) {
+        chatContainer.classList.add('visible');
+        chatInput.focus();
+      }
+      return;
+    }
+    
+    // If chat is open and Escape pressed, close it
+    if (e.key === 'Escape' && chatContainer && chatContainer.classList.contains('visible')) {
+      chatContainer.classList.remove('visible');
+      chatInput.blur();
+      return;
+    }
+
     if (isTextInputFocused()) return;
 
     var key = e.key;
@@ -261,15 +342,15 @@
       }
       return;
     }
-    if (state.activeModule === 'BUILD') {
+      if (state.activeModule === 'BUILD') {
       if (key === 'r' || key === 'R') {
         e.preventDefault();
         hytopia.sendData({ action: 'buildRotate' });
         return;
       }
-      if (key === 'p' || key === 'P' || key === ' ') {
+      if (key === 'Enter') {
         e.preventDefault();
-        hytopia.sendData({ action: 'buildPlace' });
+        sendBuildPlace();
         return;
       }
       if (key === 'd' || key === 'D') {
@@ -323,7 +404,7 @@
         } else if (action === 'rotate') {
           hytopia.sendData({ action: 'buildRotate' });
         } else if (action === 'place') {
-          hytopia.sendData({ action: 'buildPlace' });
+          sendBuildPlace();
         } else if (action === 'delete') {
           hytopia.sendData({ action: 'buildDelete' });
         }
@@ -334,7 +415,7 @@
     if (state.activeModule !== 'BUILD') return;
     if (e.button !== 0) return;
     if (e.target.closest('#hud-root') || e.target.closest('.modal-root.visible')) return;
-    hytopia.sendData({ action: 'buildPlace' });
+    sendBuildPlace();
   });
   document.addEventListener('contextmenu', function(e) {
     if (state.activeModule !== 'BUILD') return;
@@ -345,6 +426,53 @@
   });
   if (document.getElementById('window-shell-close')) {
     document.getElementById('window-shell-close').addEventListener('click', closeModule);
+  }
+
+  // Chat input handlers
+  var chatButton = document.getElementById('chat-button');
+  var chatInput = document.getElementById('chat-input');
+  var chatContainer = document.getElementById('chat-container');
+
+  if (chatButton) {
+    chatButton.addEventListener('click', function() {
+      if (chatContainer.classList.contains('visible')) {
+        chatContainer.classList.remove('visible');
+        chatInput.blur();
+      } else {
+        chatContainer.classList.add('visible');
+        chatInput.focus();
+      }
+    });
+  }
+
+  if (chatInput) {
+    chatInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        var command = chatInput.value.trim();
+        if (command) {
+          // Send chat command to server
+          hytopia.sendData({ action: 'chatCommand', command: command });
+          console.log('[Chat] Sent command: ' + command);
+          chatInput.value = '';
+          if (chatContainer) {
+            chatContainer.classList.remove('visible');
+            chatInput.blur();
+          }
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        if (chatContainer) {
+          chatContainer.classList.remove('visible');
+          chatInput.blur();
+        }
+      }
+    });
+
+    chatInput.addEventListener('blur', function() {
+      // Optional: keep chat visible for a bit even after blur
+      // so user can see feedback messages before it disappears
+    });
   }
 
   if (hud) {
@@ -693,5 +821,88 @@
     transform: scale(0.92);
     background-color: rgba(0, 0, 0, 0.75);
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Chat UI */
+  .chat-container {
+    position: fixed;
+    bottom: 80px;
+    left: 16px;
+    background: rgba(0, 0, 0, 0.85);
+    border: 2px solid #4a90d9;
+    border-radius: 8px;
+    padding: 8px 12px;
+    display: none;
+    z-index: 90;
+    max-width: 400px;
+  }
+  .chat-container.visible {
+    display: block;
+    animation: slideUp 0.15s ease-out;
+  }
+  @keyframes slideUp {
+    from { transform: translateY(20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+  .chat-input-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .chat-label {
+    color: #4a90d9;
+    font-weight: bold;
+    font-size: 14px;
+  }
+  .chat-input {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid #4a90d9;
+    color: #fff;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 14px;
+    font-family: 'Arial', sans-serif;
+    outline: none;
+    transition: all 0.2s;
+  }
+  .chat-input:focus {
+    background: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 0 8px rgba(74, 144, 217, 0.5);
+  }
+  .chat-input::placeholder {
+    color: rgba(255, 255, 255, 0.5);
+  }
+  .chat-hint {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.6);
+    white-space: nowrap;
+  }
+  .chat-button {
+    position: fixed;
+    bottom: 16px;
+    left: 16px;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    background: #4a90d9;
+    color: white;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    font-size: 24px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    z-index: 89;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+  .chat-button:hover {
+    background: #5a9fea;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    transform: scale(1.05);
+  }
+  .chat-button:active {
+    transform: scale(0.95);
   }
 </style>

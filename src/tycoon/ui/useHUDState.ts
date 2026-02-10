@@ -49,6 +49,18 @@ export interface BuildDebugState {
   snappedPos: { x: number; y: number; z: number } | null;
   ghostSpawned: boolean;
   lastPlaceAttempt: { at: number; result: string } | null;
+  /** Placed item id currently targeted for delete (if any) */
+  targetedPlacedItemId?: string | null;
+  /** Computed refund (integer dollars) for targeted item */
+  targetedRefund?: number | null;
+}
+
+/** Sim debug panel: NPC and sim stats (dev-only). */
+export interface SimDebugState {
+  activeNPCCount: number;
+  npcLastSpawnTime: number | null;
+  npcSpawnInterval: number;
+  lastArrivedNpcId: string | null;
 }
 
 /** Module → display key for HUD labels (e.g. BUILD → 'B'). */
@@ -69,6 +81,7 @@ export interface HUDState {
   buildCatalog: BuildCatalogItemState[] | null;
   buildSelection: BuildSelectionState | null;
   buildDebug: BuildDebugState | null;
+  simDebug: SimDebugState | null;
   moduleKeyHints: ModuleKeyHints;
   topCenter: TopCenterModesState;
   topRight: TopRightStatsState;
@@ -123,6 +136,19 @@ export function getHUDState(
           seatId: o.seatId,
         }))
       : [];
+  
+  // Build simDebug from NPC state (if restaurant is open)
+  let simDebug: SimDebugState | null = null;
+  if (plotId != null && plotState?.restaurantSettings?.isOpen) {
+    const sim = getSimState(plotId);
+    simDebug = {
+      activeNPCCount: sim.npcs.size,
+      npcLastSpawnTime: sim.npcLastSpawnAt > 0 ? sim.npcLastSpawnAt : null,
+      npcSpawnInterval: 6000, // Import from config if needed
+      lastArrivedNpcId: sim.lastArrivedNpcId,
+    };
+  }
+
   return {
     mode,
     activeModule,
@@ -130,6 +156,7 @@ export function getHUDState(
     buildCatalog: buildCatalog ?? null,
     buildSelection: buildSelection ?? null,
     buildDebug: buildDebug ?? null,
+    simDebug,
     moduleKeyHints,
     topCenter: getTopCenterState(
       activeModule === 'BUILD' || activeModule === 'SHOP' || activeModule === 'RESTAURANT' ? activeModule : 'NONE',

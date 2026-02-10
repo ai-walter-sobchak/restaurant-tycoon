@@ -16,39 +16,39 @@ export interface CatalogItem {
 
 export const BUILD_CATALOG: CatalogItem[] = [
   {
-    itemType: 'floor_tile',
-    cost: 10,
-    footprint: { w: 1, d: 1 },
-    rotationSupport: true,
-    modelUri: 'models/structures/slabs/grass slab.gltf',
-  },
-  {
-    itemType: 'wall_segment',
-    cost: 25,
-    footprint: { w: 1, d: 1 },
-    rotationSupport: true,
-    modelUri: 'models/structures/slabs/granite slab.gltf',
-  },
-  {
     itemType: 'table',
     cost: 50,
     footprint: { w: 2, d: 1 },
     rotationSupport: true,
-    modelUri: 'models/structures/slabs/granite slab.gltf',
+    modelUri: 'models/environment/Dungeon/wooden-table.gltf',
   },
   {
     itemType: 'chair',
     cost: 30,
     footprint: { w: 1, d: 1 },
     rotationSupport: true,
-    modelUri: 'models/structures/slabs/grass flower slab.gltf',
+    modelUri: 'models/environment/Tropical/summer-chair.gltf',
   },
   {
     itemType: 'stove',
     cost: 100,
     footprint: { w: 1, d: 1 },
     rotationSupport: true,
-    modelUri: 'models/structures/slabs/granite slab.gltf',
+    modelUri: 'models/environment/Essentials/cooking-bench.gltf',
+  },
+  {
+    itemType: 'workbench',
+    cost: 75,
+    footprint: { w: 1, d: 1 },
+    rotationSupport: true,
+    modelUri: 'models/environment/Essentials/workbench.gltf',
+  },
+  {
+    itemType: 'trash_bin',
+    cost: 20,
+    footprint: { w: 1, d: 1 },
+    rotationSupport: true,
+    modelUri: 'models/environment/City/trash-bin.gltf',
   },
 ];
 

@@ -119,18 +119,46 @@ export interface SimCustomer {
   left: boolean;
 }
 
+/** NPC state: spawned entity with movement towards target point. */
+export interface SimNPC {
+  npcId: string;
+  debugName: string;
+  /** Hytopia Entity.id */
+  entityId: number;
+  /** Current position */
+  position: Vec3;
+  /** Target position to move towards */
+  targetPosition: Vec3;
+  /** Movement speed units/second */
+  movementSpeed: number;
+  /** Time (ms) when NPC was spawned */
+  spawnedAt: number;
+  /** Time (ms) when NPC arrived at target (or null if not arrived) */
+  arrivedAt: number | null;
+  /** Event fired once on arrival */
+  onArrivedFired: boolean;
+}
+
 /** In-memory sim state per plot (not persisted). Cleared when restaurant closes. */
 export interface PlotSimState {
   orders: Order[];
   customers: SimCustomer[];
   /** PlacedItem.id (stove) -> orderId currently cooking. */
   stoveOrder: Record<string, string>;
+  /** npcId -> SimNPC active NPCs */
+  npcs: Map<string, SimNPC>;
   /** Next order id prefix counter. */
   orderCounter: number;
   /** Next customer id prefix counter. */
   customerCounter: number;
+  /** Next NPC id prefix counter. */
+  npcCounter: number;
   /** Last customer spawn time (ms). */
   lastSpawnAt: number;
+  /** Last NPC spawn time (ms). */
+  npcLastSpawnAt: number;
+  /** Debug: last NPC that arrived (for HUD). */
+  lastArrivedNpcId: string | null;
 }
 
 export const PLOT_META_SCHEMA_VERSION = 1;
